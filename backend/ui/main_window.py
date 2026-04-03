@@ -60,7 +60,7 @@ class MainWindow(tk.Tk):
             ("Ver Mallas", lambda: self.show_view("mallas")),
             ("Ver Velocidades", lambda: self.show_view("velocidades")),
             ("Ver Conflictos", lambda: self.show_view("conflictos")),
-            ("🗑 Borrar datos", self.clear_all_data),
+            ("🗑 Borrar datos", self.borrar_datos),
         ]
 
         for text, command in buttons:
@@ -68,9 +68,13 @@ class MainWindow(tk.Tk):
 
 
     def clear_all_data(self) -> None:
+        """Alias de compatibilidad con nombre previo."""
+        self.borrar_datos()
+
+    def borrar_datos(self) -> None:
         confirm = messagebox.askyesno(
             "Confirmar",
-            "¿Seguro que quieres borrar todos los datos de pruebas?",
+            "Se borrarán TODOS los datos y el control de correos. ¿Continuar?",
         )
         if not confirm:
             return
@@ -79,9 +83,9 @@ class MainWindow(tk.Tk):
             borrar_todo()
             for key in self.views:
                 self.views[key].load_data()
-            self.status_var.set("Datos borrados")
-            self.log("Datos SQLite borrados desde UI")
-            messagebox.showinfo("OK", "Datos borrados")
+            self.status_var.set("Base de datos y control reiniciados")
+            self.log("Base de datos y control de procesados reiniciados desde UI")
+            messagebox.showinfo("OK", "Base de datos y control reiniciados")
         except Exception as exc:  # pragma: no cover - protección UI
             self.log(f"Error al borrar datos: {exc}")
             messagebox.showerror("RailOps", f"No se pudieron borrar los datos:\n{exc}")

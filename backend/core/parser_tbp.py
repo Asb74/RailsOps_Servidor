@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import pdfplumber
@@ -255,6 +256,7 @@ def parse_tbp(pdf_path: str) -> list[dict[str, Any]]:
 def procesar_tbp(pdf_path: str, documento_id: int, sqlite_service: Any) -> list[dict[str, Any]]:
     """Parsea TBP e inserta resultados en SQLite (tabla `tbp`)."""
     resultados = parse_tbp(pdf_path)
+    nombre_pdf = Path(pdf_path).name
 
     for idx, restriccion in enumerate(resultados, start=1):
         try:
@@ -277,7 +279,10 @@ def procesar_tbp(pdf_path: str, documento_id: int, sqlite_service: Any) -> list[
                 periodicidad=limpiar_periodicidad(restriccion.get("periodicidad")),
                 vias=limpiar_vias(restriccion.get("vias")),
                 velocidad_limitada=_parse_float(restriccion.get("velocidad_limitada")),
+                archivo=nombre_pdf,
             )
+            if isinstance(restriccion, dict):
+                restriccion["archivo"] = nombre_pdf
         except Exception as exc:  # pragma: no cover - no romper procesamiento por una fila
             logger.warning(
                 "No se pudo insertar restricción TBP idx=%s para documento_id=%s: %s",

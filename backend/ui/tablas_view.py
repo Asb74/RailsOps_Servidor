@@ -17,6 +17,10 @@ TABLE_CONFIG: dict[str, dict[str, str]] = {
     "conflictos": {"title": "Tabla Conflictos", "empty": "No hay registros en Conflictos."},
 }
 
+COLUMN_HEADER_ALIASES: dict[str, str] = {
+    "archivo": "Archivo",
+}
+
 
 class TablaView(ttk.Frame):
     def __init__(self, parent: ttk.Widget, table_name: str):
@@ -93,7 +97,7 @@ class TablaView(ttk.Frame):
         self.tree["columns"] = self.columns
 
         for col in self.columns:
-            self.tree.heading(col, text=col)
+            self.tree.heading(col, text=COLUMN_HEADER_ALIASES.get(col, col))
             self.tree.column(col, width=130, minwidth=80, stretch=True, anchor="w")
 
     def _fetch_schema_columns(self) -> list[str]:
