@@ -11,6 +11,7 @@ y persiste resultados en la tabla `conflictos` de SQLite.
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime
 from typing import Any
 
@@ -69,8 +70,38 @@ def _buscar_velocidad_max(paso: dict[str, Any], velocidades: list[dict[str, Any]
     return None
 
 
+def _es_conexion_sqlite(origen: Any) -> bool:
+    return isinstance(origen, sqlite3.Connection)
+
+
+def _obtener_rows(origen: Any, tabla: str, order_by: str, tren: str | None = None) -> list[dict[str, Any]]:
+    if _es_conexion_sqlite(origen):
+        cur = origen.cursor()
+        if tabla == "mallas" and tren:
+            cur.execute(f"SELECT * FROM {tabla} WHERE tren = ? ORDER BY {order_by}", (tren,))
+        else:
+            cur.execute(f"SELECT * FROM {tabla} ORDER BY {order_by}")
+        return cur.fetchall()
+
+    if tabla == "mallas":
+        return origen.obtener_mallas(tren=tren)
+    if tabla == "tba":
+        return origen.obtener_tba()
+    if tabla == "tbp":
+        return origen.obtener_tbp()
+    if tabla == "velocidades":
+        return origen.obtener_velocidades()
+    raise ValueError(f"Tabla no soportada en motor: {tabla}")
+
+
 def limpiar_conflictos(sqlite_service: Any) -> None:
     """Borra tabla conflictos antes de recalcular."""
+    if _es_conexion_sqlite(sqlite_service):
+        cur = sqlite_service.cursor()
+        cur.execute("DELETE FROM conflictos")
+        sqlite_service.commit()
+        return
+
     sqlite_service.limpiar_conflictos()
 
 
@@ -93,17 +124,41 @@ def insertar_conflictos(sqlite_service: Any, conflictos: list[dict[str, Any]]) -
             continue
         dedupe.add(llave)
 
-        sqlite_service.insertar_conflicto(
-            tren=conflicto.get("tren"),
-            linea=conflicto.get("linea"),
-            pk=conflicto.get("pk"),
-            hora=conflicto.get("hora"),
-            tipo_conflicto=conflicto.get("tipo_conflicto"),
-            descripcion=conflicto.get("descripcion"),
-            accion=conflicto.get("accion"),
-            documento_origen=conflicto.get("documento_origen"),
-            archivo=conflicto.get("archivo"),
-        )
+        if _es_conexion_sqlite(sqlite_service):
+            cur = sqlite_service.cursor()
+            cur.execute(
+                """
+                INSERT INTO conflictos (
+                    tren, linea, pk, hora, tipo_conflicto, descripcion,
+                    accion, documento_origen, archivo, fecha_detectado
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    conflicto.get("tren"),
+                    conflicto.get("linea"),
+                    conflicto.get("pk"),
+                    conflicto.get("hora"),
+                    conflicto.get("tipo_conflicto"),
+                    conflicto.get("descripcion"),
+                    conflicto.get("accion"),
+                    conflicto.get("documento_origen"),
+                    conflicto.get("archivo"),
+                ),
+            )
+            sqlite_service.commit()
+        else:
+            sqlite_service.insertar_conflicto(
+                tren=conflicto.get("tren"),
+                linea=conflicto.get("linea"),
+                pk=conflicto.get("pk"),
+                hora=conflicto.get("hora"),
+                tipo_conflicto=conflicto.get("tipo_conflicto"),
+                descripcion=conflicto.get("descripcion"),
+                accion=conflicto.get("accion"),
+                documento_origen=conflicto.get("documento_origen"),
+                archivo=conflicto.get("archivo"),
+            )
         insertados += 1
 
     return insertados
@@ -117,10 +172,10 @@ def detectar_conflictos(sqlite_service: Any, tren: str | None = None) -> list[di
     2) TBP: LIMITACION TEMPORAL
     3) Velocidad: EXCESO VELOCIDAD cuando velocidad_max < velocidad_teorica.
     """
-    mallas = sqlite_service.obtener_mallas(tren=tren)
-    tba_rows = sqlite_service.obtener_tba()
-    tbp_rows = sqlite_service.obtener_tbp()
-    velocidades = sqlite_service.obtener_velocidades()
+    mallas = _obtener_rows(sqlite_service, "mallas", "tren, orden, hora", tren=tren)
+    tba_rows = _obtener_rows(sqlite_service, "tba", "linea, pk_inicio, hora_inicio")
+    tbp_rows = _obtener_rows(sqlite_service, "tbp", "linea, pk_inicio, hora_inicio")
+    velocidades = _obtener_rows(sqlite_service, "velocidades", "linea, pk")
 
     limpiar_conflictos(sqlite_service)
 

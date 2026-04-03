@@ -7,7 +7,8 @@ import tkinter as tk
 from datetime import datetime
 from tkinter import messagebox, ttk
 
-from backend.db.sqlite_service import borrar_todo
+from backend.core.motor_conflictos import detectar_conflictos, limpiar_conflictos
+from backend.db.sqlite_service import borrar_todo, get_connection
 from backend.services.ingest_service import ejecutar_ingestion_gmail
 from backend.ui.tablas_view import TablaView
 
@@ -55,6 +56,7 @@ class MainWindow(tk.Tk):
 
         buttons = [
             ("Procesar Gmail", self.run_gmail_processing),
+            ("🚆 Calcular Conflictos", self.calcular_conflictos),
             ("Ver TBA", lambda: self.show_view("tba")),
             ("Ver TBP", lambda: self.show_view("tbp")),
             ("Ver Mallas", lambda: self.show_view("mallas")),
@@ -65,7 +67,6 @@ class MainWindow(tk.Tk):
 
         for text, command in buttons:
             ttk.Button(self.sidebar, text=text, command=command).pack(fill="x", pady=4)
-
 
     def clear_all_data(self) -> None:
         """Alias de compatibilidad con nombre previo."""
@@ -89,6 +90,31 @@ class MainWindow(tk.Tk):
         except Exception as exc:  # pragma: no cover - protección UI
             self.log(f"Error al borrar datos: {exc}")
             messagebox.showerror("RailOps", f"No se pudieron borrar los datos:\n{exc}")
+
+    def calcular_conflictos(self) -> None:
+        conn = get_connection()
+        try:
+            # limpiar conflictos anteriores
+            limpiar_conflictos(conn)
+
+            # ejecutar cálculo
+            conflictos = detectar_conflictos(conn)
+
+            self.cargar_conflictos()
+            self.status_var.set(f"Conflictos recalculados: {len(conflictos)}")
+            self.log(f"Conflictos recalculados correctamente: {len(conflictos)}")
+            messagebox.showinfo("Conflictos", f"Conflictos detectados: {len(conflictos)}")
+        except Exception as exc:  # pragma: no cover - protección UI
+            self.status_var.set("Error al calcular conflictos")
+            self.log(f"Error en cálculo de conflictos: {exc}")
+            messagebox.showerror("Conflictos", f"Error al calcular conflictos:\n{exc}")
+        finally:
+            conn.close()
+
+    def cargar_conflictos(self) -> None:
+        total = self.views["conflictos"].load_data()
+        self.views["conflictos"].tkraise()
+        self.log(f"Tabla de conflictos recargada ({total} registros)")
 
     def _register_views(self) -> None:
         self.views = {
@@ -151,6 +177,8 @@ class MainWindow(tk.Tk):
         self.logs_text.insert("end", line)
         self.logs_text.see("end")
         self.logs_text.configure(state="disabled")
+
+
 if __name__ == "__main__":
     app = MainWindow()
     app.mainloop()
