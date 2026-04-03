@@ -16,6 +16,14 @@ from datetime import datetime
 from typing import Any
 
 
+def safe_float(value: Any) -> float | None:
+    """Convierte un valor numérico potencialmente textual a float."""
+    try:
+        return float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
 def _normalizar_hora(hora_raw: Any) -> str | None:
     """Convierte una hora a formato HH:MM para comparaciones."""
     if hora_raw is None:
@@ -34,11 +42,15 @@ def _normalizar_hora(hora_raw: Any) -> str | None:
 
 
 def _hora_en_rango(hora: str | None, inicio: str | None, fin: str | None) -> bool:
-    """Valida si hora HH:MM está entre inicio y fin (inclusive)."""
+    """Valida si hora HH:MM está entre inicio y fin (inclusive), con cruce de medianoche."""
     if not hora or not inicio or not fin:
         return False
 
-    return inicio <= hora <= fin
+    if inicio <= fin:
+        return inicio <= hora <= fin
+
+    # cruza medianoche
+    return hora >= inicio or hora <= fin
 
 
 def _pk_en_rango(pk: float | None, pk_inicio: float | None, pk_fin: float | None) -> bool:
@@ -57,7 +69,7 @@ def _buscar_velocidad_max(paso: dict[str, Any], velocidades: list[dict[str, Any]
     no se marca conflicto de velocidad.
     """
     linea = paso.get("linea")
-    pk = paso.get("pk")
+    pk = safe_float(paso.get("pk"))
 
     if pk is None:
         return None
@@ -65,7 +77,7 @@ def _buscar_velocidad_max(paso: dict[str, Any], velocidades: list[dict[str, Any]
     for vel in velocidades:
         if linea and vel.get("linea") != linea:
             continue
-        if vel.get("pk") == pk:
+        if safe_float(vel.get("pk")) == pk:
             return vel
     return None
 
@@ -182,7 +194,7 @@ def detectar_conflictos(sqlite_service: Any, tren: str | None = None) -> list[di
     conflictos: list[dict[str, Any]] = []
 
     for paso in mallas:
-        pk = paso.get("pk")
+        pk = safe_float(paso.get("pk"))
         hora = _normalizar_hora(paso.get("hora"))
         if pk is None or hora is None:
             continue
@@ -191,13 +203,17 @@ def detectar_conflictos(sqlite_service: Any, tren: str | None = None) -> list[di
 
         # 1) CONFLICTO TBA (CRÍTICO)
         for tba in tba_rows:
-            if linea and tba.get("linea") != linea:
+            pk_inicio = safe_float(tba.get("pk_inicio"))
+            pk_fin = safe_float(tba.get("pk_fin"))
+            if pk_inicio is None or pk_fin is None:
                 continue
-            if not _pk_en_rango(pk, tba.get("pk_inicio"), tba.get("pk_fin")):
+            print(f"Comparando PK {pk} con rango {pk_inicio}-{pk_fin}")
+            if not _pk_en_rango(pk, pk_inicio, pk_fin):
                 continue
 
             hora_inicio = _normalizar_hora(tba.get("hora_inicio"))
             hora_fin = _normalizar_hora(tba.get("hora_fin"))
+            print(f"Comparando hora {hora} con {hora_inicio}-{hora_fin}")
             if not _hora_en_rango(hora, hora_inicio, hora_fin):
                 continue
 
@@ -220,13 +236,17 @@ def detectar_conflictos(sqlite_service: Any, tren: str | None = None) -> list[di
 
         # 2) CONFLICTO TBP (LIMITACIÓN)
         for tbp in tbp_rows:
-            if linea and tbp.get("linea") != linea:
+            pk_inicio = safe_float(tbp.get("pk_inicio"))
+            pk_fin = safe_float(tbp.get("pk_fin"))
+            if pk_inicio is None or pk_fin is None:
                 continue
-            if not _pk_en_rango(pk, tbp.get("pk_inicio"), tbp.get("pk_fin")):
+            print(f"Comparando PK {pk} con rango {pk_inicio}-{pk_fin}")
+            if not _pk_en_rango(pk, pk_inicio, pk_fin):
                 continue
 
             hora_inicio = _normalizar_hora(tbp.get("hora_inicio"))
             hora_fin = _normalizar_hora(tbp.get("hora_fin"))
+            print(f"Comparando hora {hora} con {hora_inicio}-{hora_fin}")
             if not _hora_en_rango(hora, hora_inicio, hora_fin):
                 continue
 
