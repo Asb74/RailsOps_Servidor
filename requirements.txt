@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pdfplumber
+firebase-admin
+python-dotenv
+google-api-python-client
+google-auth
+google-auth-oauthlib

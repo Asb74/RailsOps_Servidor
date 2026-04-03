@@ -1,0 +1,74 @@
+# =========================
+# 🧠 GENERAL
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# 🐍 PYTHON / BACKEND
+# =========================
+venv/
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# logs
+*.log
+
+# =========================
+# 🔐 CREDENCIALES (CRÍTICO)
+# =========================
+token.json
+client_secret.json
+*.firebase.json
+railops.json
+serviceAccountKey.json
+
+# =========================
+# 📂 DATOS LOCALES
+# =========================
+input/
+control_procesados.json
+*.db
+*.sqlite
+
+# PDFs y archivos temporales
+*.pdf
+
+# =========================
+# 🧪 CACHE / TEMP
+# =========================
+.cache/
+.tmp/
+.temp/
+
+# =========================
+# 🚀 FASTAPI / UVICORN
+# =========================
+*.reload
+
+# =========================
+# 📱 FLUTTER
+# =========================
+app/build/
+app/.dart_tool/
+app/.packages
+app/pubspec.lock
+
+# iOS
+app/ios/Pods/
+app/ios/.symlinks/
+app/ios/Flutter/Flutter.framework
+
+# Android
+app/android/.gradle/
+app/android/app/build/
+
+# =========================
+# 🧠 IDE
+# =========================
+.vscode/
+.idea/
+*.iml
