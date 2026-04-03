@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 _RE_ESPACIOS = re.compile(r"\s+")
 _RE_HORA = re.compile(r"\b([01]?\d|2[0-3]):[0-5]\d\b")
 _RE_PK = re.compile(r"\b(?:pk|p\.k\.|km)\s*[:\-]?\s*(\d+(?:[\.,]\d+)?)\b", re.I)
+_RE_NUMEROS_DECIMALES = re.compile(r"\d+\.\d+")
 
 
 def _limpiar_texto_base(texto: Any) -> str | None:
@@ -55,6 +56,36 @@ def _parse_pk(texto: Any) -> float | None:
         return float(match.group(1).replace(",", "."))
     except ValueError:
         return None
+
+
+def extraer_pk_y_estacion(texto: Any) -> tuple[float | None, str | None]:
+    """Extrae PK decimal y limpia el nombre de estación.
+
+    Reglas:
+    - Detecta todos los decimales y usa el primero como PK.
+    - Soporta formato tipo "12.7/6.2" (usa 12.7).
+    - Elimina códigos numéricos iniciales, PK detectado y ruido numérico.
+    """
+    base = _limpiar_texto_base(texto)
+    if not base:
+        return None, None
+
+    numeros = _RE_NUMEROS_DECIMALES.findall(base)
+    pk = float(numeros[0]) if numeros else None
+
+    texto_limpio = base
+    if numeros:
+        texto_limpio = texto_limpio.replace(numeros[0], " ", 1)
+
+    # Quitar patrones de PK explícitos, números iniciales y residuos numéricos.
+    texto_limpio = _RE_PK.sub(" ", texto_limpio)
+    texto_limpio = re.sub(r"^\s*\d+(?:\.\d+)?\s*", " ", texto_limpio)
+    texto_limpio = re.sub(r"\d+(?:\.\d+)?/?\d*", " ", texto_limpio)
+    texto_limpio = re.sub(r"[^\w\sÁÉÍÓÚÜÑáéíóúüñ-]", " ", texto_limpio)
+    texto_limpio = _RE_ESPACIOS.sub(" ", texto_limpio).strip(" .;:-/")
+
+    estacion = limpiar_nombre_estacion(texto_limpio) if texto_limpio else None
+    return pk, estacion
 
 
 def _detectar_cabecera(texto_completo: str) -> dict[str, str | None]:
@@ -142,7 +173,9 @@ def _parse_fila_estacion_hora(linea: str) -> tuple[str | None, str | None, float
     if any(t in candidato.lower() for t in tokens_ruido):
         return None, None, pk
 
-    estacion = limpiar_nombre_estacion(candidato)
+    pk_extraido, estacion = extraer_pk_y_estacion(candidato)
+    if pk is None:
+        pk = pk_extraido
     if not estacion:
         return None, None, pk
 
