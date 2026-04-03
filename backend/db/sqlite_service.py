@@ -19,7 +19,7 @@ SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
 _init_lock = Lock()
 _is_initialized = False
-_ARCHIVO_COLUMN_TABLES = ("tba", "tbp", "mallas", "velocidades")
+_ARCHIVO_COLUMN_TABLES = ("tba", "tbp", "mallas", "velocidades", "conflictos")
 
 
 def _resolve_db_path(db_path: str | Path | None = None) -> Path:
@@ -269,6 +269,7 @@ def insertar_conflicto(
     descripcion: str | None = None,
     accion: str | None = None,
     documento_origen: str | None = None,
+    archivo: str | None = None,
     fecha_detectado: str | None = None,
     db_path: str | Path | None = None,
 ) -> int:
@@ -279,9 +280,9 @@ def insertar_conflicto(
             """
             INSERT INTO conflictos (
                 tren, linea, pk, hora, tipo_conflicto, descripcion,
-                accion, documento_origen, fecha_detectado
+                accion, documento_origen, archivo, fecha_detectado
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
             """,
             (
                 tren,
@@ -292,6 +293,7 @@ def insertar_conflicto(
                 descripcion,
                 accion,
                 documento_origen,
+                archivo,
                 fecha_detectado,
             ),
         )
@@ -394,6 +396,93 @@ def buscar_restricciones_por_rango_pk(
     finally:
         conn.close()
 
+
+
+def obtener_mallas(tren: str | None = None, db_path: str | Path | None = None) -> list[dict[str, Any]]:
+    """Retorna pasos de malla, opcionalmente filtrados por tren."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        if tren:
+            cur.execute(
+                """
+                SELECT *
+                FROM mallas
+                WHERE tren = ?
+                ORDER BY tren, orden, hora
+                """,
+                (tren,),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT *
+                FROM mallas
+                ORDER BY tren, orden, hora
+                """
+            )
+        return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def obtener_tba(db_path: str | Path | None = None) -> list[dict[str, Any]]:
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT *
+            FROM tba
+            ORDER BY linea, pk_inicio, hora_inicio
+            """
+        )
+        return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def obtener_tbp(db_path: str | Path | None = None) -> list[dict[str, Any]]:
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT *
+            FROM tbp
+            ORDER BY linea, pk_inicio, hora_inicio
+            """
+        )
+        return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def obtener_velocidades(db_path: str | Path | None = None) -> list[dict[str, Any]]:
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT *
+            FROM velocidades
+            ORDER BY linea, pk
+            """
+        )
+        return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def limpiar_conflictos(db_path: str | Path | None = None) -> None:
+    """Elimina todos los registros de conflictos."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM conflictos")
+        conn.commit()
+    finally:
+        conn.close()
 
 # Alias de compatibilidad con nombre previo.
 guardar_documento_local = insertar_documento
