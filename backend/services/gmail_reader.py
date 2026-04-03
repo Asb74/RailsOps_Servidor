@@ -50,31 +50,7 @@ def _safe_filename(name: str) -> str:
     return cleaned or "adjunto_sin_nombre"
 
 
-def _extract_parts_recursive(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    parts: list[dict[str, Any]] = []
-
-    for part in payload.get("parts", []) or []:
-        if part.get("parts"):
-            parts.extend(_extract_parts_recursive(part))
-
-        filename = part.get("filename") or ""
-        body = part.get("body") or {}
-        has_attachment_id = bool(body.get("attachmentId"))
-        has_inline_data = bool(body.get("data"))
-
-        if filename and (has_attachment_id or has_inline_data):
-            parts.append(part)
-
-    # Adjuntos no multipart (menos habitual) en el payload raíz
-    root_filename = payload.get("filename") or ""
-    root_body = payload.get("body") or {}
-    if root_filename and (root_body.get("attachmentId") or root_body.get("data")):
-        parts.append(payload)
-
-    return parts
-
-
-def _decode_part_data(service: Any, message_id: str, part: dict[str, Any]) -> bytes:
+def _decode_part_data(service: Any, user_id: str, message_id: str, part: dict[str, Any]) -> bytes:
     body = part.get("body") or {}
 
     if body.get("attachmentId"):
@@ -82,7 +58,7 @@ def _decode_part_data(service: Any, message_id: str, part: dict[str, Any]) -> by
             service.users()
             .messages()
             .attachments()
-            .get(userId="me", messageId=message_id, id=body["attachmentId"])
+            .get(userId=user_id, messageId=message_id, id=body["attachmentId"])
             .execute()
         )
         raw_data = attachment.get("data", "")
@@ -100,8 +76,76 @@ def _is_useful_attachment(filename: str) -> bool:
     return suffix in _ALLOWED_EXTENSIONS
 
 
+def _build_unique_output_path(folder: Path, base_name: str) -> Path:
+    candidate = folder / base_name
+    if not candidate.exists():
+        return candidate
+
+    stem = Path(base_name).stem
+    suffix = Path(base_name).suffix
+    counter = 1
+    while True:
+        alternative = folder / f"{stem}_{counter}{suffix}"
+        if not alternative.exists():
+            return alternative
+        counter += 1
+
+
+def extraer_adjuntos(parts, service, user_id, msg_id, archivos):
+    """Recorre recursivamente payload.parts y descarga todos los adjuntos."""
+    if not parts:
+        return
+
+    output_dir = Path(INPUT_FOLDER)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for part in parts:
+        subparts = part.get("parts") or []
+        if subparts:
+            extraer_adjuntos(subparts, service, user_id, msg_id, archivos)
+
+        filename = part.get("filename") or ""
+        body = part.get("body") or {}
+        attachment_id = body.get("attachmentId")
+
+        if not filename or not attachment_id:
+            continue
+
+        safe_name = _safe_filename(filename)
+        if not _is_useful_attachment(safe_name):
+            logger.info("[GMAIL] Adjunto ignorado por extensión: gmail_id=%s archivo=%s", msg_id, safe_name)
+            continue
+
+        try:
+            data = _decode_part_data(service, user_id, msg_id, part)
+            if not data:
+                logger.warning("[GMAIL] Adjunto vacío: gmail_id=%s archivo=%s", msg_id, safe_name)
+                continue
+
+            out_path = _build_unique_output_path(output_dir, f"{msg_id}_{safe_name}")
+            out_path.write_bytes(data)
+
+            archivos.append(
+                {
+                    "filename": out_path.name,
+                    "original_filename": safe_name,
+                    "path": str(out_path),
+                    "gmail_id": msg_id,
+                }
+            )
+            print("Descargado:", out_path.name)
+            logger.info("[GMAIL] Adjunto descargado: gmail_id=%s archivo=%s", msg_id, out_path.name)
+        except Exception as exc:  # pragma: no cover - tolerancia red/API
+            logger.exception(
+                "[GMAIL] Error descargando adjunto gmail_id=%s archivo=%s: %s",
+                msg_id,
+                safe_name,
+                exc,
+            )
+
+
 def descargar_adjuntos() -> list[dict[str, Any]]:
-    """Descarga todos los adjuntos útiles de correos Gmail con estructura plana.
+    """Descarga todos los adjuntos útiles de correos Gmail.
 
     Retorna una lista de items: {filename, path, gmail_id, subject}.
     """
@@ -124,42 +168,23 @@ def descargar_adjuntos() -> list[dict[str, Any]]:
         headers = payload.get("headers", []) or []
         subject = next((h.get("value") for h in headers if h.get("name", "").lower() == "subject"), "")
 
-        parts = _extract_parts_recursive(payload)
-        if not parts:
+        adjuntos_msg: list[dict[str, Any]] = []
+        extraer_adjuntos(payload.get("parts", []), service, "me", msg_id, adjuntos_msg)
+
+        # Compatibilidad para correos con adjunto en el payload raíz sin parts.
+        root_filename = payload.get("filename") or ""
+        root_body = payload.get("body") or {}
+        if root_filename and root_body.get("attachmentId"):
+            extraer_adjuntos([payload], service, "me", msg_id, adjuntos_msg)
+
+        if not adjuntos_msg:
             logger.info("[GMAIL] Correo sin adjuntos descargables: gmail_id=%s", msg_id)
             continue
 
-        logger.info("[GMAIL] Correo gmail_id=%s adjuntos_detectados=%s", msg_id, len(parts))
+        logger.info("[GMAIL] Correo gmail_id=%s adjuntos_descargados=%s", msg_id, len(adjuntos_msg))
 
-        for idx, part in enumerate(parts, start=1):
-            original_name = part.get("filename") or f"adjunto_{idx}"
-            filename = _safe_filename(original_name)
-
-            if not _is_useful_attachment(filename):
-                logger.info("[GMAIL] Adjunto ignorado por extensión: gmail_id=%s archivo=%s", msg_id, filename)
-                continue
-
-            try:
-                file_data = _decode_part_data(service, msg_id, part)
-                if not file_data:
-                    logger.warning("[GMAIL] Adjunto vacío: gmail_id=%s archivo=%s", msg_id, filename)
-                    continue
-
-                out_name = f"{msg_id}_{idx}_{filename}"
-                file_path = Path(INPUT_FOLDER) / out_name
-                file_path.write_bytes(file_data)
-
-                descargados.append(
-                    {
-                        "filename": out_name,
-                        "original_filename": filename,
-                        "path": str(file_path),
-                        "gmail_id": msg_id,
-                        "subject": subject,
-                    }
-                )
-                logger.info("[GMAIL] Adjunto descargado: gmail_id=%s archivo=%s", msg_id, out_name)
-            except Exception as exc:  # pragma: no cover - tolerancia red/API
-                logger.exception("[GMAIL] Error descargando adjunto gmail_id=%s archivo=%s: %s", msg_id, filename, exc)
+        for item in adjuntos_msg:
+            item["subject"] = subject
+            descargados.append(item)
 
     return descargados
