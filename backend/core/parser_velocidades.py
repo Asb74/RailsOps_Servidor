@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import pdfplumber
@@ -293,6 +294,7 @@ def parse_velocidades(pdf_path: str) -> list[dict[str, Any]]:
 def procesar_velocidades(pdf_path: str, documento_id: int, sqlite_service: Any) -> list[dict[str, Any]]:
     """Parsea CVM e inserta resultados en SQLite (tabla `velocidades`)."""
     resultados = parse_velocidades(pdf_path)
+    nombre_pdf = Path(pdf_path).name
 
     for idx, velocidad in enumerate(resultados, start=1):
         try:
@@ -319,8 +321,10 @@ def procesar_velocidades(pdf_path: str, documento_id: int, sqlite_service: Any) 
                 pk=pk,
                 velocidad_max=vel_max,
                 tipo_tren=velocidad_con_doc.get("tipo_tren"),
+                archivo=nombre_pdf,
             )
 
+            velocidad_con_doc["archivo"] = nombre_pdf
             resultados[idx - 1] = velocidad_con_doc
         except Exception as exc:  # pragma: no cover - no interrumpir por fila defectuosa
             logger.warning(

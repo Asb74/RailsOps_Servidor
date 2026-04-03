@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS tba (
     tipo TEXT,
     periodicidad TEXT,
     vias TEXT,
+    archivo TEXT,
     FOREIGN KEY (documento_id) REFERENCES documentos(id) ON DELETE CASCADE
 );
 
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS tbp (
     periodicidad TEXT,
     vias TEXT,
     velocidad_limitada REAL,
+    archivo TEXT,
     FOREIGN KEY (documento_id) REFERENCES documentos(id) ON DELETE CASCADE
 );
 
@@ -55,6 +57,7 @@ CREATE TABLE IF NOT EXISTS mallas (
     pk REAL,
     hora TEXT,
     orden INTEGER,
+    archivo TEXT,
     FOREIGN KEY (documento_id) REFERENCES documentos(id) ON DELETE CASCADE
 );
 
@@ -65,6 +68,7 @@ CREATE TABLE IF NOT EXISTS velocidades (
     pk REAL NOT NULL,
     velocidad_max REAL NOT NULL,
     tipo_tren TEXT,
+    archivo TEXT,
     FOREIGN KEY (documento_id) REFERENCES documentos(id) ON DELETE CASCADE
 );
 

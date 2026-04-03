@@ -7,6 +7,7 @@ funciones de inserción y consultas básicas.
 from __future__ import annotations
 
 import sqlite3
+import os
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -18,6 +19,7 @@ SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
 _init_lock = Lock()
 _is_initialized = False
+_ARCHIVO_COLUMN_TABLES = ("tba", "tbp", "mallas", "velocidades")
 
 
 def _resolve_db_path(db_path: str | Path | None = None) -> Path:
@@ -54,6 +56,7 @@ def _ensure_db_initialized(db_path: Path) -> None:
         try:
             schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
             conn.executescript(schema_sql)
+            _ensure_archivo_columns(conn)
             conn.commit()
         finally:
             conn.close()
@@ -64,6 +67,16 @@ def _ensure_db_initialized(db_path: Path) -> None:
 def init_db(db_path: str | Path | None = None) -> None:
     """Inicializa explícitamente la base de datos SQLite."""
     _ensure_db_initialized(_resolve_db_path(db_path))
+
+
+def _ensure_archivo_columns(conn: sqlite3.Connection) -> None:
+    """Añade la columna `archivo` en tablas históricas si aún no existe."""
+    cur = conn.cursor()
+    for table_name in _ARCHIVO_COLUMN_TABLES:
+        cur.execute(f"PRAGMA table_info({table_name})")
+        columns = {row[1] for row in cur.fetchall()}
+        if "archivo" not in columns:
+            cur.execute(f"ALTER TABLE {table_name} ADD COLUMN archivo TEXT")
 
 
 def insertar_documento(
@@ -104,6 +117,7 @@ def insertar_tba(
     tipo: str | None = None,
     periodicidad: str | None = None,
     vias: str | None = None,
+    archivo: str | None = None,
     db_path: str | Path | None = None,
 ) -> int:
     conn = get_connection(db_path)
@@ -113,9 +127,9 @@ def insertar_tba(
             """
             INSERT INTO tba (
                 documento_id, linea, estacion_inicio, estacion_fin, pk_inicio, pk_fin,
-                fecha_inicio, hora_inicio, fecha_fin, hora_fin, tipo, periodicidad, vias
+                fecha_inicio, hora_inicio, fecha_fin, hora_fin, tipo, periodicidad, vias, archivo
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 documento_id,
@@ -131,6 +145,7 @@ def insertar_tba(
                 tipo,
                 periodicidad,
                 vias,
+                archivo,
             ),
         )
         conn.commit()
@@ -154,6 +169,7 @@ def insertar_tbp(
     periodicidad: str | None = None,
     vias: str | None = None,
     velocidad_limitada: float | None = None,
+    archivo: str | None = None,
     db_path: str | Path | None = None,
 ) -> int:
     conn = get_connection(db_path)
@@ -164,9 +180,9 @@ def insertar_tbp(
             INSERT INTO tbp (
                 documento_id, linea, estacion_inicio, estacion_fin, pk_inicio, pk_fin,
                 fecha_inicio, hora_inicio, fecha_fin, hora_fin, tipo, periodicidad, vias,
-                velocidad_limitada
+                velocidad_limitada, archivo
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 documento_id,
@@ -183,6 +199,7 @@ def insertar_tbp(
                 periodicidad,
                 vias,
                 velocidad_limitada,
+                archivo,
             ),
         )
         conn.commit()
@@ -199,6 +216,7 @@ def insertar_malla(
     pk: float | None = None,
     hora: str | None = None,
     orden: int | None = None,
+    archivo: str | None = None,
     db_path: str | Path | None = None,
 ) -> int:
     conn = get_connection(db_path)
@@ -206,10 +224,10 @@ def insertar_malla(
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO mallas (documento_id, tren, linea, estacion, pk, hora, orden)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO mallas (documento_id, tren, linea, estacion, pk, hora, orden, archivo)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (documento_id, tren, linea, estacion, pk, hora, orden),
+            (documento_id, tren, linea, estacion, pk, hora, orden, archivo),
         )
         conn.commit()
         return cur.lastrowid
@@ -223,6 +241,7 @@ def insertar_velocidad(
     pk: float,
     velocidad_max: float,
     tipo_tren: str | None = None,
+    archivo: str | None = None,
     db_path: str | Path | None = None,
 ) -> int:
     conn = get_connection(db_path)
@@ -230,10 +249,10 @@ def insertar_velocidad(
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO velocidades (documento_id, linea, pk, velocidad_max, tipo_tren)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO velocidades (documento_id, linea, pk, velocidad_max, tipo_tren, archivo)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (documento_id, linea, pk, velocidad_max, tipo_tren),
+            (documento_id, linea, pk, velocidad_max, tipo_tren, archivo),
         )
         conn.commit()
         return cur.lastrowid
@@ -389,3 +408,8 @@ def borrar_todo(db_path: str | Path | None = None) -> None:
         conn.commit()
     finally:
         conn.close()
+
+    control_file = r"C:\RailOps_Servidor\control_procesados.json"
+    if os.path.exists(control_file):
+        os.remove(control_file)
+        print("Control de procesados eliminado")

@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import pdfplumber
@@ -203,6 +204,7 @@ def parse_malla(pdf_path: str) -> list[dict[str, Any]]:
 def procesar_malla(pdf_path: str, documento_id: int, sqlite_service: Any) -> list[dict[str, Any]]:
     """Parsea MALLA e inserta pasos en SQLite (tabla `mallas`)."""
     resultados = parse_malla(pdf_path)
+    nombre_pdf = Path(pdf_path).name
 
     for idx, paso in enumerate(resultados, start=1):
         try:
@@ -221,8 +223,10 @@ def procesar_malla(pdf_path: str, documento_id: int, sqlite_service: Any) -> lis
                 pk=paso_con_doc.get("pk"),
                 hora=paso_con_doc.get("hora"),
                 orden=paso_con_doc.get("orden"),
+                archivo=nombre_pdf,
             )
 
+            paso_con_doc["archivo"] = nombre_pdf
             resultados[idx - 1] = paso_con_doc
         except Exception as exc:  # pragma: no cover - tolerancia por fila
             logger.warning(
