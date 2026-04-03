@@ -120,7 +120,9 @@ class MainWindow(tk.Tk):
     def log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         line = f"[{timestamp}] {message}\n"
-
+if __name__ == "__main__":
+    app = MainWindow()
+    app.mainloop()
         self.logs_text.configure(state="normal")
         self.logs_text.insert("end", line)
         self.logs_text.see("end")
