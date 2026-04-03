@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS conflictos (
     descripcion TEXT,
     accion TEXT,
     documento_origen TEXT,
+    archivo TEXT,
     fecha_detectado TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
