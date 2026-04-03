@@ -378,3 +378,14 @@ def buscar_restricciones_por_rango_pk(
 
 # Alias de compatibilidad con nombre previo.
 guardar_documento_local = insertar_documento
+
+def borrar_todo(db_path: str | Path | None = None) -> None:
+    """Borra datos de tablas principales sin eliminar su estructura."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        for tabla in ("tba", "tbp", "mallas", "velocidades", "conflictos", "documentos"):
+            cur.execute(f"DELETE FROM {tabla}")
+        conn.commit()
+    finally:
+        conn.close()

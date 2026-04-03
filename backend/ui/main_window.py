@@ -7,6 +7,7 @@ import tkinter as tk
 from datetime import datetime
 from tkinter import messagebox, ttk
 
+from backend.db.sqlite_service import borrar_todo
 from backend.services.ingest_service import ejecutar_ingestion_gmail
 from backend.ui.tablas_view import TablaView
 
@@ -59,10 +60,31 @@ class MainWindow(tk.Tk):
             ("Ver Mallas", lambda: self.show_view("mallas")),
             ("Ver Velocidades", lambda: self.show_view("velocidades")),
             ("Ver Conflictos", lambda: self.show_view("conflictos")),
+            ("🗑 Borrar datos", self.clear_all_data),
         ]
 
         for text, command in buttons:
             ttk.Button(self.sidebar, text=text, command=command).pack(fill="x", pady=4)
+
+
+    def clear_all_data(self) -> None:
+        confirm = messagebox.askyesno(
+            "Confirmar",
+            "¿Seguro que quieres borrar todos los datos de pruebas?",
+        )
+        if not confirm:
+            return
+
+        try:
+            borrar_todo()
+            for key in self.views:
+                self.views[key].load_data()
+            self.status_var.set("Datos borrados")
+            self.log("Datos SQLite borrados desde UI")
+            messagebox.showinfo("OK", "Datos borrados")
+        except Exception as exc:  # pragma: no cover - protección UI
+            self.log(f"Error al borrar datos: {exc}")
+            messagebox.showerror("RailOps", f"No se pudieron borrar los datos:\n{exc}")
 
     def _register_views(self) -> None:
         self.views = {
