@@ -15,60 +15,17 @@ import sqlite3
 from datetime import datetime
 from typing import Any
 
+from backend.core.utils_normalizacion import (
+    normalizar_fecha_hora,
+    normalizar_hora,
+    normalizar_linea,
+    normalizar_pk,
+)
+
 
 def safe_float(value: Any) -> float | None:
-    """Convierte un valor numérico potencialmente textual a float."""
-    try:
-        return float(str(value).replace(",", "."))
-    except (TypeError, ValueError):
-        return None
-
-
-def _normalizar_hora(hora_raw: Any) -> str | None:
-    """Convierte una hora a formato HH:MM para comparaciones."""
-    if hora_raw is None:
-        return None
-
-    valor = str(hora_raw).strip()
-    if not valor:
-        return None
-
-    for fmt in ("%H:%M", "%H:%M:%S"):
-        try:
-            return datetime.strptime(valor, fmt).strftime("%H:%M")
-        except ValueError:
-            continue
-    return None
-
-
-def _normalizar_fecha(fecha_raw: Any) -> str | None:
-    """Convierte una fecha textual a formato ISO YYYY-MM-DD."""
-    if fecha_raw is None:
-        return None
-
-    valor = str(fecha_raw).strip()
-    if not valor:
-        return None
-
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%d-%m-%y"):
-        try:
-            return datetime.strptime(valor, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    return None
-
-
-def _normalizar_fecha_hora(fecha_raw: Any, hora_raw: Any) -> datetime | None:
-    """Combina fecha + hora y retorna datetime normalizado si es válido."""
-    fecha = _normalizar_fecha(fecha_raw)
-    hora = _normalizar_hora(hora_raw)
-    if not fecha or not hora:
-        return None
-
-    try:
-        return datetime.strptime(f"{fecha} {hora}", "%Y-%m-%d %H:%M")
-    except ValueError:
-        return None
+    """Compatibilidad retroactiva: alias de normalización de PK/numérico."""
+    return normalizar_pk(value)
 
 
 def _hora_en_rango(hora: str | None, inicio: str | None, fin: str | None) -> bool:
@@ -103,8 +60,8 @@ def _fecha_hora_en_intervalo(
     if fecha_hora is None:
         return False
 
-    inicio = _normalizar_fecha_hora(fecha_inicio, hora_inicio)
-    fin = _normalizar_fecha_hora(fecha_fin, hora_fin)
+    inicio = normalizar_fecha_hora(fecha_inicio, hora_inicio)
+    fin = normalizar_fecha_hora(fecha_fin, hora_fin)
     if inicio is None or fin is None:
         return False
 
@@ -117,16 +74,17 @@ def _fecha_hora_en_intervalo(
 
 def _buscar_velocidad_max(paso: dict[str, Any], velocidades: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Encuentra el registro de velocidad aplicable al paso por línea+PK."""
-    linea = paso.get("linea")
-    pk = safe_float(paso.get("pk"))
+    linea = normalizar_linea(paso.get("linea"))
+    pk = normalizar_pk(paso.get("pk"))
 
     if pk is None:
         return None
 
     for vel in velocidades:
-        if linea and vel.get("linea") != linea:
+        linea_vel = normalizar_linea(vel.get("linea"))
+        if linea is not None and linea_vel != linea:
             continue
-        if safe_float(vel.get("pk")) == pk:
+        if normalizar_pk(vel.get("pk")) == pk:
             return vel
     return None
 
@@ -231,20 +189,23 @@ def detectar_conflictos_tba(
 ) -> list[dict[str, Any]]:
     """Detecta conflictos MALLAS vs TBA para un paso de malla."""
     conflictos: list[dict[str, Any]] = []
-    pk = safe_float(paso.get("pk"))
-    hora = _normalizar_hora(paso.get("hora"))
-    linea = paso.get("linea")
-    fecha_hora_paso = _normalizar_fecha_hora(paso.get("fecha"), paso.get("hora"))
+    pk = normalizar_pk(paso.get("pk"))
+    hora = normalizar_hora(paso.get("hora"))
+    linea = normalizar_linea(paso.get("linea"))
+    fecha_hora_paso = normalizar_fecha_hora(paso.get("fecha"), paso.get("hora"))
 
-    if pk is None or hora is None or not linea:
+    print(f"[DEBUG][TBA] linea={linea} pk={pk} hora={hora}")
+
+    if pk is None or hora is None or linea is None:
         return conflictos
 
     for tba in tba_rows:
-        if tba.get("linea") != linea:
+        linea_tba = normalizar_linea(tba.get("linea"))
+        if linea_tba != linea:
             continue
 
-        pk_inicio = safe_float(tba.get("pk_inicio"))
-        pk_fin = safe_float(tba.get("pk_fin"))
+        pk_inicio = normalizar_pk(tba.get("pk_inicio"))
+        pk_fin = normalizar_pk(tba.get("pk_fin"))
         if not _pk_en_rango(pk, pk_inicio, pk_fin):
             continue
 
@@ -258,8 +219,8 @@ def detectar_conflictos_tba(
             ):
                 continue
         else:
-            hora_inicio = _normalizar_hora(tba.get("hora_inicio"))
-            hora_fin = _normalizar_hora(tba.get("hora_fin"))
+            hora_inicio = normalizar_hora(tba.get("hora_inicio"))
+            hora_fin = normalizar_hora(tba.get("hora_fin"))
             if not _hora_en_rango(hora, hora_inicio, hora_fin):
                 continue
 
@@ -289,20 +250,23 @@ def detectar_conflictos_tbp(
 ) -> list[dict[str, Any]]:
     """Detecta conflictos MALLAS vs TBP para un paso de malla."""
     conflictos: list[dict[str, Any]] = []
-    pk = safe_float(paso.get("pk"))
-    hora = _normalizar_hora(paso.get("hora"))
-    linea = paso.get("linea")
-    fecha_hora_paso = _normalizar_fecha_hora(paso.get("fecha"), paso.get("hora"))
+    pk = normalizar_pk(paso.get("pk"))
+    hora = normalizar_hora(paso.get("hora"))
+    linea = normalizar_linea(paso.get("linea"))
+    fecha_hora_paso = normalizar_fecha_hora(paso.get("fecha"), paso.get("hora"))
 
-    if pk is None or hora is None or not linea:
+    print(f"[DEBUG][TBP] linea={linea} pk={pk} hora={hora}")
+
+    if pk is None or hora is None or linea is None:
         return conflictos
 
     for tbp in tbp_rows:
-        if tbp.get("linea") != linea:
+        linea_tbp = normalizar_linea(tbp.get("linea"))
+        if linea_tbp != linea:
             continue
 
-        pk_inicio = safe_float(tbp.get("pk_inicio"))
-        pk_fin = safe_float(tbp.get("pk_fin"))
+        pk_inicio = normalizar_pk(tbp.get("pk_inicio"))
+        pk_fin = normalizar_pk(tbp.get("pk_fin"))
         if not _pk_en_rango(pk, pk_inicio, pk_fin):
             continue
 
@@ -316,8 +280,8 @@ def detectar_conflictos_tbp(
             ):
                 continue
         else:
-            hora_inicio = _normalizar_hora(tbp.get("hora_inicio"))
-            hora_fin = _normalizar_hora(tbp.get("hora_fin"))
+            hora_inicio = normalizar_hora(tbp.get("hora_inicio"))
+            hora_fin = normalizar_hora(tbp.get("hora_fin"))
             if not _hora_en_rango(hora, hora_inicio, hora_fin):
                 continue
 
@@ -338,6 +302,67 @@ def detectar_conflictos_tbp(
     return conflictos
 
 
+def detectar_conflictos_velocidad(
+    paso: dict[str, Any],
+    velocidades: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Detecta conflictos de velocidad para un paso de malla."""
+    conflictos: list[dict[str, Any]] = []
+
+    pk = normalizar_pk(paso.get("pk"))
+    hora = normalizar_hora(paso.get("hora"))
+    linea = normalizar_linea(paso.get("linea"))
+
+    print(f"[DEBUG][VEL] linea={linea} pk={pk} hora={hora}")
+
+    if pk is None or hora is None:
+        return conflictos
+
+    vel_row = _buscar_velocidad_max(paso, velocidades)
+    if not vel_row:
+        return conflictos
+
+    velocidad_max = normalizar_pk(vel_row.get("velocidad_max"))
+    velocidad_teorica = normalizar_pk(paso.get("velocidad_teorica"))
+
+    if velocidad_teorica is None:
+        conflictos.append(
+            {
+                "tren": paso.get("tren"),
+                "linea": linea,
+                "pk": pk,
+                "hora": hora,
+                "tipo_conflicto": "EXCESO VELOCIDAD",
+                "descripcion": (
+                    f"Existe velocidad máxima {velocidad_max} en PK {pk}, "
+                    "sin velocidad teórica informada por el tren"
+                ),
+                "accion": "Reducir velocidad",
+                "documento_origen": str(vel_row.get("documento_id") or ""),
+                "archivo": vel_row.get("archivo"),
+            }
+        )
+    elif velocidad_max is not None and velocidad_max < velocidad_teorica:
+        conflictos.append(
+            {
+                "tren": paso.get("tren"),
+                "linea": linea,
+                "pk": pk,
+                "hora": hora,
+                "tipo_conflicto": "EXCESO VELOCIDAD",
+                "descripcion": (
+                    f"Velocidad teórica {velocidad_teorica} supera máxima "
+                    f"permitida {velocidad_max} en PK {pk}"
+                ),
+                "accion": "Reducir velocidad",
+                "documento_origen": str(vel_row.get("documento_id") or ""),
+                "archivo": vel_row.get("archivo"),
+            }
+        )
+
+    return conflictos
+
+
 def calcular_conflictos(sqlite_service: Any, tren: str | None = None) -> list[dict[str, Any]]:
     """Detecta conflictos operativos y los persiste en tabla conflictos."""
     mallas = _obtener_rows(sqlite_service, "mallas", "tren, orden, hora", tren=tren)
@@ -352,54 +377,7 @@ def calcular_conflictos(sqlite_service: Any, tren: str | None = None) -> list[di
     for paso in mallas:
         conflictos.extend(detectar_conflictos_tba(paso, tba_rows))
         conflictos.extend(detectar_conflictos_tbp(paso, tbp_rows))
-
-        # Conflicto de velocidad existente
-        pk = safe_float(paso.get("pk"))
-        hora = _normalizar_hora(paso.get("hora"))
-        if pk is None or hora is None:
-            continue
-
-        vel_row = _buscar_velocidad_max(paso, velocidades)
-        if not vel_row:
-            continue
-
-        velocidad_max = vel_row.get("velocidad_max")
-        velocidad_teorica = paso.get("velocidad_teorica")
-
-        if velocidad_teorica is None:
-            conflictos.append(
-                {
-                    "tren": paso.get("tren"),
-                    "linea": paso.get("linea"),
-                    "pk": pk,
-                    "hora": hora,
-                    "tipo_conflicto": "EXCESO VELOCIDAD",
-                    "descripcion": (
-                        f"Existe velocidad máxima {velocidad_max} en PK {pk}, "
-                        "sin velocidad teórica informada por el tren"
-                    ),
-                    "accion": "Reducir velocidad",
-                    "documento_origen": str(vel_row.get("documento_id") or ""),
-                    "archivo": vel_row.get("archivo"),
-                }
-            )
-        elif velocidad_max is not None and float(velocidad_max) < float(velocidad_teorica):
-            conflictos.append(
-                {
-                    "tren": paso.get("tren"),
-                    "linea": paso.get("linea"),
-                    "pk": pk,
-                    "hora": hora,
-                    "tipo_conflicto": "EXCESO VELOCIDAD",
-                    "descripcion": (
-                        f"Velocidad teórica {velocidad_teorica} supera máxima "
-                        f"permitida {velocidad_max} en PK {pk}"
-                    ),
-                    "accion": "Reducir velocidad",
-                    "documento_origen": str(vel_row.get("documento_id") or ""),
-                    "archivo": vel_row.get("archivo"),
-                }
-            )
+        conflictos.extend(detectar_conflictos_velocidad(paso, velocidades))
 
     insertar_conflictos(sqlite_service, conflictos)
     return conflictos
@@ -408,4 +386,3 @@ def calcular_conflictos(sqlite_service: Any, tren: str | None = None) -> list[di
 def detectar_conflictos(sqlite_service: Any, tren: str | None = None) -> list[dict[str, Any]]:
     """Alias de compatibilidad con nombre previo."""
     return calcular_conflictos(sqlite_service, tren=tren)
-
