@@ -12,7 +12,8 @@ y persiste resultados en la tabla `conflictos` de SQLite.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
+from collections import defaultdict
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from backend.core.utils_normalizacion import (
@@ -28,34 +29,13 @@ def safe_float(value: Any) -> float | None:
     return normalizar_pk(value)
 
 
-def _hora_en_rango(hora: str | None, inicio: str | None, fin: str | None) -> bool:
-    """Valida si hora HH:MM está entre inicio y fin (inclusive), con cruce de medianoche."""
-    if not hora or not inicio or not fin:
-        return False
-
-    if inicio <= fin:
-        return inicio <= hora <= fin
-
-    # cruza medianoche
-    return hora >= inicio or hora <= fin
-
-
-def _pk_en_rango(pk: float | None, pk_inicio: float | None, pk_fin: float | None) -> bool:
-    if pk is None or pk_inicio is None or pk_fin is None:
-        return False
-
-    bajo = min(pk_inicio, pk_fin)
-    alto = max(pk_inicio, pk_fin)
-    return bajo <= pk <= alto
-
-
-def hay_solape(
+def hay_solape_pk(
     pk1_ini: float | None,
     pk1_fin: float | None,
     pk2_ini: float | None,
     pk2_fin: float | None,
 ) -> bool:
-    """Retorna True si los rangos [pk1_ini, pk1_fin] y [pk2_ini, pk2_fin] se solapan."""
+    """Retorna True si los rangos PK [pk1_ini, pk1_fin] y [pk2_ini, pk2_fin] se solapan."""
     if pk1_ini is None or pk1_fin is None or pk2_ini is None or pk2_fin is None:
         return False
 
@@ -64,44 +44,37 @@ def hay_solape(
     return max(a_ini, b_ini) <= min(a_fin, b_fin)
 
 
-def _fecha_hora_en_intervalo(
-    fecha_hora: datetime | None,
-    fecha_inicio: Any,
-    hora_inicio: Any,
-    fecha_fin: Any,
-    hora_fin: Any,
+def normalizar_intervalo_datetime(inicio: datetime, fin: datetime) -> tuple[datetime, datetime]:
+    """Normaliza intervalo datetime para contemplar cruces de medianoche."""
+    if fin < inicio:
+        fin = fin + timedelta(days=1)
+    return inicio, fin
+
+
+def hay_solape_temporal(
+    inicio1: datetime | None,
+    fin1: datetime | None,
+    inicio2: datetime | None,
+    fin2: datetime | None,
 ) -> bool:
-    """Valida si fecha_hora cae dentro de [fecha_inicio+hora_inicio, fecha_fin+hora_fin]."""
-    if fecha_hora is None:
+    """Retorna True si dos intervalos temporales se solapan, incluyendo medianoche.
+
+    Se prueban desplazamientos de ±1 día para soportar intervalos anclados sin fecha real.
+    """
+    if inicio1 is None or fin1 is None or inicio2 is None or fin2 is None:
         return False
 
-    inicio = normalizar_fecha_hora(fecha_inicio, hora_inicio)
-    fin = normalizar_fecha_hora(fecha_fin, hora_fin)
-    if inicio is None or fin is None:
-        return False
+    a_ini, a_fin = normalizar_intervalo_datetime(inicio1, fin1)
+    b_ini, b_fin = normalizar_intervalo_datetime(inicio2, fin2)
 
-    if inicio <= fin:
-        return inicio <= fecha_hora <= fin
+    for day_shift in (-1, 0, 1):
+        delta = timedelta(days=day_shift)
+        b_ini_shift = b_ini + delta
+        b_fin_shift = b_fin + delta
+        if max(a_ini, b_ini_shift) <= min(a_fin, b_fin_shift):
+            return True
 
-    # defensivo por datos invertidos
-    return fin <= fecha_hora <= inicio
-
-
-def _buscar_velocidad_max(paso: dict[str, Any], velocidades: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Encuentra el registro de velocidad aplicable al paso por línea+PK."""
-    linea = normalizar_linea(paso.get("linea"))
-    pk = normalizar_pk(paso.get("pk"))
-
-    if pk is None:
-        return None
-
-    for vel in velocidades:
-        linea_vel = normalizar_linea(vel.get("linea"))
-        if linea is not None and linea_vel != linea:
-            continue
-        if normalizar_pk(vel.get("pk")) == pk:
-            return vel
-    return None
+    return False
 
 
 def _es_conexion_sqlite(origen: Any) -> bool:
@@ -128,6 +101,128 @@ def _obtener_rows(origen: Any, tabla: str, order_by: str, tren: str | None = Non
     raise ValueError(f"Tabla no soportada en motor: {tabla}")
 
 
+def _hora_a_time(hora_raw: Any) -> time | None:
+    hora = normalizar_hora(hora_raw)
+    if not hora:
+        return None
+    try:
+        return datetime.strptime(hora, "%H:%M").time()
+    except ValueError:
+        return None
+
+
+def _resolver_intervalo_restriccion(restr: dict[str, Any]) -> tuple[datetime, datetime, bool] | None:
+    """Retorna intervalo temporal de restricción y si tiene fecha real."""
+    inicio_real = normalizar_fecha_hora(restr.get("fecha_inicio"), restr.get("hora_inicio"))
+    fin_real = normalizar_fecha_hora(restr.get("fecha_fin"), restr.get("hora_fin"))
+
+    if inicio_real and fin_real:
+        ini, fin = normalizar_intervalo_datetime(inicio_real, fin_real)
+        return ini, fin, True
+
+    hora_ini = _hora_a_time(restr.get("hora_inicio"))
+    hora_fin = _hora_a_time(restr.get("hora_fin"))
+    if not hora_ini or not hora_fin:
+        return None
+
+    base = date(2000, 1, 1)
+    ini = datetime.combine(base, hora_ini)
+    fin = datetime.combine(base, hora_fin)
+    ini, fin = normalizar_intervalo_datetime(ini, fin)
+    return ini, fin, False
+
+
+def _orden_valor(paso: dict[str, Any]) -> tuple[int, int]:
+    orden_raw = paso.get("orden")
+    try:
+        return 0, int(orden_raw)
+    except (TypeError, ValueError):
+        return 1, 0
+
+
+def _time_sort_key(paso: dict[str, Any]) -> tuple[int, int, int]:
+    t = _hora_a_time(paso.get("hora"))
+    if t is None:
+        return 1, 99, 99
+    return 0, t.hour, t.minute
+
+
+def _paso_datetime_progresivo(pasos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Construye datetimes progresivos para pasos de malla con cruce de medianoche."""
+    base_day = date(2000, 1, 1)
+    salida: list[dict[str, Any]] = []
+
+    ultimo_dt: datetime | None = None
+    offset_dias = 0
+
+    for paso in pasos:
+        paso_norm = dict(paso)
+        hora_t = _hora_a_time(paso.get("hora"))
+        if hora_t is None:
+            paso_norm["_dt_prog"] = None
+            salida.append(paso_norm)
+            continue
+
+        candidato = datetime.combine(base_day + timedelta(days=offset_dias), hora_t)
+        if ultimo_dt is not None and candidato < ultimo_dt:
+            offset_dias += 1
+            candidato = datetime.combine(base_day + timedelta(days=offset_dias), hora_t)
+
+        paso_norm["_dt_prog"] = candidato
+        ultimo_dt = candidato
+        salida.append(paso_norm)
+
+    return salida
+
+
+def construir_tramos_malla(mallas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Construye tramos consecutivos por tren a partir de pasos de malla."""
+    mallas_por_tren: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for paso in mallas:
+        tren_id = str(paso.get("tren") or "")
+        mallas_por_tren[tren_id].append(paso)
+
+    tramos: list[dict[str, Any]] = []
+
+    for tren_id, pasos in mallas_por_tren.items():
+        pasos_ordenados = sorted(pasos, key=lambda p: (_orden_valor(p), _time_sort_key(p), normalizar_pk(p.get("pk")) or -1.0))
+        pasos_con_dt = _paso_datetime_progresivo(pasos_ordenados)
+
+        for idx in range(len(pasos_con_dt) - 1):
+            paso_ini = pasos_con_dt[idx]
+            paso_fin = pasos_con_dt[idx + 1]
+
+            pk_ini = normalizar_pk(paso_ini.get("pk"))
+            pk_fin = normalizar_pk(paso_fin.get("pk"))
+            dt_ini = paso_ini.get("_dt_prog")
+            dt_fin = paso_fin.get("_dt_prog")
+
+            if pk_ini is None or pk_fin is None or dt_ini is None or dt_fin is None:
+                continue
+
+            dt_ini, dt_fin = normalizar_intervalo_datetime(dt_ini, dt_fin)
+            linea = normalizar_linea(paso_ini.get("linea"))
+            hora_ref = normalizar_hora(paso_ini.get("hora"))
+
+            tramos.append(
+                {
+                    "tren": tren_id,
+                    "linea": linea,
+                    "pk_inicio": pk_ini,
+                    "pk_fin": pk_fin,
+                    "dt_inicio": dt_ini,
+                    "dt_fin": dt_fin,
+                    "hora_ref": hora_ref,
+                    "pk_ref": pk_ini,
+                    "archivo": paso_ini.get("archivo") or paso_fin.get("archivo"),
+                    "paso_inicio": paso_ini,
+                    "paso_fin": paso_fin,
+                }
+            )
+
+    return tramos
+
+
 def limpiar_conflictos(sqlite_service: Any) -> None:
     """Borra tabla conflictos antes de recalcular."""
     if _es_conexion_sqlite(sqlite_service):
@@ -139,21 +234,29 @@ def limpiar_conflictos(sqlite_service: Any) -> None:
     sqlite_service.limpiar_conflictos()
 
 
+def _llave_dedupe_conflicto(conflicto: dict[str, Any]) -> tuple[Any, ...]:
+    pk = normalizar_pk(conflicto.get("pk"))
+    pk_round = None if pk is None else round(pk, 3)
+    hora = normalizar_hora(conflicto.get("hora"))
+
+    return (
+        conflicto.get("tren"),
+        conflicto.get("linea"),
+        conflicto.get("tipo_conflicto"),
+        str(conflicto.get("documento_origen") or ""),
+        conflicto.get("archivo"),
+        hora,
+        pk_round,
+    )
+
+
 def insertar_conflictos(sqlite_service: Any, conflictos: list[dict[str, Any]]) -> int:
     """Inserta conflictos detectados en SQLite evitando duplicados."""
     insertados = 0
     dedupe: set[tuple[Any, ...]] = set()
 
     for conflicto in conflictos:
-        llave = (
-            conflicto.get("tren"),
-            conflicto.get("linea"),
-            conflicto.get("pk"),
-            conflicto.get("hora"),
-            conflicto.get("tipo_conflicto"),
-            conflicto.get("documento_origen"),
-            conflicto.get("archivo"),
-        )
+        llave = _llave_dedupe_conflicto(conflicto)
         if llave in dedupe:
             continue
         dedupe.add(llave)
@@ -198,149 +301,151 @@ def insertar_conflictos(sqlite_service: Any, conflictos: list[dict[str, Any]]) -
     return insertados
 
 
-def detectar_conflictos_tba(
-    paso: dict[str, Any],
-    tba_rows: list[dict[str, Any]],
-    paso_siguiente: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    """Detecta conflictos MALLAS vs TBA para un paso de malla."""
+def _detectar_conflictos_restriccion_por_tramo(
+    tramo: dict[str, Any],
+    restricciones: list[dict[str, Any]],
+    *,
+    es_tba: bool,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Detecta conflictos TBA/TBP para un tramo de tren."""
     conflictos: list[dict[str, Any]] = []
-    pk = normalizar_pk(paso.get("pk"))
-    hora = normalizar_hora(paso.get("hora"))
-    linea = normalizar_linea(paso.get("linea"))
-    fecha_hora_paso = normalizar_fecha_hora(paso.get("fecha"), paso.get("hora"))
+    stats = {"comparadas": 0, "desc_linea": 0, "desc_pk": 0, "desc_tiempo": 0, "ok": 0}
 
-    pk_fin_tren = normalizar_pk((paso_siguiente or {}).get("pk"))
-    if pk_fin_tren is None:
-        pk_fin_tren = pk
+    linea_tramo = normalizar_linea(tramo.get("linea"))
+    if linea_tramo is None:
+        return conflictos, stats
 
-    print(
-        f"[DEBUG][TBA] tren={paso.get('tren')} linea={linea} "
-        f"pk_inicio={pk} pk_fin={pk_fin_tren} hora={hora}"
-    )
+    for restr in restricciones:
+        stats["comparadas"] += 1
 
-    if pk is None or hora is None or linea is None:
-        return conflictos
-
-    for tba in tba_rows:
-        linea_tba = normalizar_linea(tba.get("linea"))
-        if linea_tba != linea:
+        linea_restr = normalizar_linea(restr.get("linea"))
+        if linea_restr != linea_tramo:
+            stats["desc_linea"] += 1
             continue
 
-        pk_inicio = normalizar_pk(tba.get("pk_inicio"))
-        pk_fin = normalizar_pk(tba.get("pk_fin"))
-        if not hay_solape(pk, pk_fin_tren, pk_inicio, pk_fin):
+        pk_ini_restr = normalizar_pk(restr.get("pk_inicio"))
+        pk_fin_restr = normalizar_pk(restr.get("pk_fin"))
+        if not hay_solape_pk(tramo.get("pk_inicio"), tramo.get("pk_fin"), pk_ini_restr, pk_fin_restr):
+            stats["desc_pk"] += 1
             continue
-        print(
-            f"[DEBUG][TBA][SOLAPE] tren={paso.get('tren')} "
-            f"tramo_tren=[{min(pk, pk_fin_tren)}, {max(pk, pk_fin_tren)}] "
-            f"tramo_tba=[{min(pk_inicio, pk_fin)}, {max(pk_inicio, pk_fin)}]"
-        )
 
-        if fecha_hora_paso is not None:
-            if not _fecha_hora_en_intervalo(
-                fecha_hora_paso,
-                tba.get("fecha_inicio"),
-                tba.get("hora_inicio"),
-                tba.get("fecha_fin"),
-                tba.get("hora_fin"),
-            ):
-                continue
+        intervalo_restr = _resolver_intervalo_restriccion(restr)
+        if not intervalo_restr:
+            stats["desc_tiempo"] += 1
+            continue
+
+        dt_ini_restr, dt_fin_restr, _ = intervalo_restr
+        if not hay_solape_temporal(tramo.get("dt_inicio"), tramo.get("dt_fin"), dt_ini_restr, dt_fin_restr):
+            stats["desc_tiempo"] += 1
+            continue
+
+        if es_tba:
+            tipo_txt = str(restr.get("tipo") or "").upper()
+            tipo_conflicto = "CORTE TENSIÓN" if "TENSION" in tipo_txt or "TENSIÓN" in tipo_txt else "CORTE TOTAL"
+            descripcion = "Tren atraviesa tramo afectado por TBA"
+            accion = "Reprogramar / detener circulación"
         else:
-            hora_inicio = normalizar_hora(tba.get("hora_inicio"))
-            hora_fin = normalizar_hora(tba.get("hora_fin"))
-            if not _hora_en_rango(hora, hora_inicio, hora_fin):
-                continue
-
-        tipo_tba = str(tba.get("tipo") or "").upper()
-        tipo_conflicto = "CORTE TENSIÓN" if "TENSION" in tipo_tba or "TENSIÓN" in tipo_tba else "CORTE TOTAL"
+            tipo_conflicto = "LIMITACIÓN"
+            descripcion = "Tren atraviesa tramo afectado por TBP"
+            accion = "Reducir velocidad / ajustar circulación"
 
         conflictos.append(
             {
-                "tren": paso.get("tren"),
-                "linea": linea,
-                "pk": pk,
-                "hora": hora,
+                "tren": tramo.get("tren"),
+                "linea": linea_tramo,
+                "pk": tramo.get("pk_ref") or tramo.get("pk_inicio"),
+                "hora": tramo.get("hora_ref"),
                 "tipo_conflicto": tipo_conflicto,
-                "descripcion": "Tren entra en tramo con restricción TBA",
-                "accion": "Reprogramar / detener circulación",
-                "documento_origen": str(tba.get("documento_id") or ""),
-                "archivo": tba.get("archivo"),
+                "descripcion": descripcion,
+                "accion": accion,
+                "documento_origen": str(restr.get("documento_id") or ""),
+                "archivo": restr.get("archivo") or tramo.get("archivo"),
             }
         )
+        stats["ok"] += 1
 
+    return conflictos, stats
+
+
+def _tramo_desde_paso(
+    paso: dict[str, Any],
+    paso_siguiente: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Compatibilidad: construye tramo unitario desde paso + siguiente."""
+    if paso_siguiente is None:
+        paso_siguiente = paso
+
+    pk_ini = normalizar_pk(paso.get("pk"))
+    pk_fin = normalizar_pk(paso_siguiente.get("pk"))
+    if pk_ini is None or pk_fin is None:
+        return None
+
+    hora_ini_t = _hora_a_time(paso.get("hora"))
+    hora_fin_t = _hora_a_time(paso_siguiente.get("hora"))
+    if hora_ini_t is None or hora_fin_t is None:
+        return None
+
+    base = date(2000, 1, 1)
+    dt_ini = datetime.combine(base, hora_ini_t)
+    dt_fin = datetime.combine(base, hora_fin_t)
+    dt_ini, dt_fin = normalizar_intervalo_datetime(dt_ini, dt_fin)
+
+    return {
+        "tren": paso.get("tren"),
+        "linea": normalizar_linea(paso.get("linea")),
+        "pk_inicio": pk_ini,
+        "pk_fin": pk_fin,
+        "dt_inicio": dt_ini,
+        "dt_fin": dt_fin,
+        "hora_ref": normalizar_hora(paso.get("hora")),
+        "pk_ref": pk_ini,
+        "archivo": paso.get("archivo") or (paso_siguiente or {}).get("archivo"),
+    }
+
+
+def detectar_conflictos_tba(
+    paso_o_tramo: dict[str, Any],
+    tba_rows: list[dict[str, Any]],
+    paso_siguiente: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Detecta conflictos TBA por tramo (compatibilidad con paso + siguiente)."""
+    tramo = paso_o_tramo if "dt_inicio" in paso_o_tramo and "dt_fin" in paso_o_tramo else _tramo_desde_paso(paso_o_tramo, paso_siguiente)
+    if tramo is None:
+        return []
+
+    conflictos, _ = _detectar_conflictos_restriccion_por_tramo(tramo, tba_rows, es_tba=True)
     return conflictos
 
 
 def detectar_conflictos_tbp(
-    paso: dict[str, Any],
+    paso_o_tramo: dict[str, Any],
     tbp_rows: list[dict[str, Any]],
     paso_siguiente: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Detecta conflictos MALLAS vs TBP para un paso de malla."""
-    conflictos: list[dict[str, Any]] = []
-    pk = normalizar_pk(paso.get("pk"))
-    hora = normalizar_hora(paso.get("hora"))
-    linea = normalizar_linea(paso.get("linea"))
-    fecha_hora_paso = normalizar_fecha_hora(paso.get("fecha"), paso.get("hora"))
+    """Detecta conflictos TBP por tramo (compatibilidad con paso + siguiente)."""
+    tramo = paso_o_tramo if "dt_inicio" in paso_o_tramo and "dt_fin" in paso_o_tramo else _tramo_desde_paso(paso_o_tramo, paso_siguiente)
+    if tramo is None:
+        return []
 
-    pk_fin_tren = normalizar_pk((paso_siguiente or {}).get("pk"))
-    if pk_fin_tren is None:
-        pk_fin_tren = pk
-
-    print(
-        f"[DEBUG][TBP] tren={paso.get('tren')} linea={linea} "
-        f"pk_inicio={pk} pk_fin={pk_fin_tren} hora={hora}"
-    )
-
-    if pk is None or hora is None or linea is None:
-        return conflictos
-
-    for tbp in tbp_rows:
-        linea_tbp = normalizar_linea(tbp.get("linea"))
-        if linea_tbp != linea:
-            continue
-
-        pk_inicio = normalizar_pk(tbp.get("pk_inicio"))
-        pk_fin = normalizar_pk(tbp.get("pk_fin"))
-        if not hay_solape(pk, pk_fin_tren, pk_inicio, pk_fin):
-            continue
-        print(
-            f"[DEBUG][TBP][SOLAPE] tren={paso.get('tren')} "
-            f"tramo_tren=[{min(pk, pk_fin_tren)}, {max(pk, pk_fin_tren)}] "
-            f"tramo_tbp=[{min(pk_inicio, pk_fin)}, {max(pk_inicio, pk_fin)}]"
-        )
-
-        if fecha_hora_paso is not None:
-            if not _fecha_hora_en_intervalo(
-                fecha_hora_paso,
-                tbp.get("fecha_inicio"),
-                tbp.get("hora_inicio"),
-                tbp.get("fecha_fin"),
-                tbp.get("hora_fin"),
-            ):
-                continue
-        else:
-            hora_inicio = normalizar_hora(tbp.get("hora_inicio"))
-            hora_fin = normalizar_hora(tbp.get("hora_fin"))
-            if not _hora_en_rango(hora, hora_inicio, hora_fin):
-                continue
-
-        conflictos.append(
-            {
-                "tren": paso.get("tren"),
-                "linea": linea,
-                "pk": pk,
-                "hora": hora,
-                "tipo_conflicto": "LIMITACIÓN",
-                "descripcion": "Tren circula en tramo con limitación TBP",
-                "accion": "Reducir velocidad",
-                "documento_origen": str(tbp.get("documento_id") or ""),
-                "archivo": tbp.get("archivo"),
-            }
-        )
-
+    conflictos, _ = _detectar_conflictos_restriccion_por_tramo(tramo, tbp_rows, es_tba=False)
     return conflictos
+
+
+def _buscar_velocidad_max(paso: dict[str, Any], velocidades: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Encuentra el registro de velocidad aplicable al paso por línea+PK."""
+    linea = normalizar_linea(paso.get("linea"))
+    pk = normalizar_pk(paso.get("pk"))
+
+    if pk is None:
+        return None
+
+    for vel in velocidades:
+        linea_vel = normalizar_linea(vel.get("linea"))
+        if linea is not None and linea_vel != linea:
+            continue
+        if normalizar_pk(vel.get("pk")) == pk:
+            return vel
+    return None
 
 
 def detectar_conflictos_velocidad(
@@ -353,8 +458,6 @@ def detectar_conflictos_velocidad(
     pk = normalizar_pk(paso.get("pk"))
     hora = normalizar_hora(paso.get("hora"))
     linea = normalizar_linea(paso.get("linea"))
-
-    print(f"[DEBUG][VEL] linea={linea} pk={pk} hora={hora}")
 
     if pk is None or hora is None:
         return conflictos
@@ -411,24 +514,48 @@ def calcular_conflictos(sqlite_service: Any, tren: str | None = None) -> list[di
     tbp_rows = _obtener_rows(sqlite_service, "tbp", "linea, pk_inicio, hora_inicio")
     velocidades = _obtener_rows(sqlite_service, "velocidades", "linea, pk")
 
+    print(
+        f"[DEBUG][CONFLICTOS] mallas={len(mallas)} tba={len(tba_rows)} "
+        f"tbp={len(tbp_rows)} velocidades={len(velocidades)}"
+    )
+
     limpiar_conflictos(sqlite_service)
 
     conflictos: list[dict[str, Any]] = []
-    mallas_por_tren: dict[str, list[dict[str, Any]]] = {}
+    tramos = construir_tramos_malla(mallas)
+    print(f"[DEBUG][CONFLICTOS] tramos_construidos={len(tramos)}")
+
+    stats_tba = {"comparadas": 0, "desc_linea": 0, "desc_pk": 0, "desc_tiempo": 0, "ok": 0}
+    stats_tbp = {"comparadas": 0, "desc_linea": 0, "desc_pk": 0, "desc_tiempo": 0, "ok": 0}
+
+    for tramo in tramos:
+        confl_tba, tramo_stats_tba = _detectar_conflictos_restriccion_por_tramo(tramo, tba_rows, es_tba=True)
+        confl_tbp, tramo_stats_tbp = _detectar_conflictos_restriccion_por_tramo(tramo, tbp_rows, es_tba=False)
+        conflictos.extend(confl_tba)
+        conflictos.extend(confl_tbp)
+        for key in stats_tba:
+            stats_tba[key] += tramo_stats_tba[key]
+            stats_tbp[key] += tramo_stats_tbp[key]
 
     for paso in mallas:
-        tren_id = str(paso.get("tren") or "")
-        mallas_por_tren.setdefault(tren_id, []).append(paso)
+        conflictos.extend(detectar_conflictos_velocidad(paso, velocidades))
 
-    for tren_id, pasos_tren in mallas_por_tren.items():
-        print(f"[DEBUG][CALCULO] tren={tren_id} pasos={len(pasos_tren)}")
-        for idx, paso in enumerate(pasos_tren):
-            paso_siguiente = pasos_tren[idx + 1] if idx + 1 < len(pasos_tren) else None
-            conflictos.extend(detectar_conflictos_tba(paso, tba_rows, paso_siguiente=paso_siguiente))
-            conflictos.extend(detectar_conflictos_tbp(paso, tbp_rows, paso_siguiente=paso_siguiente))
-            conflictos.extend(detectar_conflictos_velocidad(paso, velocidades))
+    insertados = insertar_conflictos(sqlite_service, conflictos)
 
-    insertar_conflictos(sqlite_service, conflictos)
+    print(
+        "[DEBUG][TBA] "
+        f"comparadas={stats_tba['comparadas']} descartes_linea={stats_tba['desc_linea']} "
+        f"descartes_pk={stats_tba['desc_pk']} descartes_tiempo={stats_tba['desc_tiempo']} "
+        f"conflictos={stats_tba['ok']}"
+    )
+    print(
+        "[DEBUG][TBP] "
+        f"comparadas={stats_tbp['comparadas']} descartes_linea={stats_tbp['desc_linea']} "
+        f"descartes_pk={stats_tbp['desc_pk']} descartes_tiempo={stats_tbp['desc_tiempo']} "
+        f"conflictos={stats_tbp['ok']}"
+    )
+    print(f"[DEBUG][CONFLICTOS] detectados={len(conflictos)} insertados_sin_duplicado={insertados}")
+
     return conflictos
 
 
