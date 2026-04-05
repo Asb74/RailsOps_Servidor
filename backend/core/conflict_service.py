@@ -311,8 +311,6 @@ def _detectar_conflictos_restriccion_por_tramo(
     stats = {"comparadas": 0, "desc_linea": 0, "desc_pk": 0, "desc_tiempo": 0, "ok": 0}
 
     linea_tramo = normalizar_linea(tramo.get("linea"))
-    if linea_tramo is None:
-        return conflictos, stats
 
     for restr in restricciones:
         stats["comparadas"] += 1
