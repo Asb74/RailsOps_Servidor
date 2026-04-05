@@ -6,7 +6,7 @@ from tkinter import ttk
 from typing import Any
 
 from backend.db.sqlite_service import get_connection
-from backend.ui.filterable_table import FilterableTable
+from backend.ui.filter_table import FilterTable
 
 
 TABLE_CONFIG: dict[str, dict[str, str]] = {
@@ -44,7 +44,7 @@ class TablaView(ttk.Frame):
         self.info_label = ttk.Label(header, text="")
         self.info_label.pack(side="right")
 
-        self.table = FilterableTable(
+        self.table = FilterTable(
             self,
             on_counts_changed=self._update_counter,
             header_aliases=COLUMN_HEADER_ALIASES,
