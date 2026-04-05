@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import tkinter as tk
 from tkinter import ttk
 from typing import Any
 
 from backend.db.sqlite_service import get_connection
+from backend.ui.filterable_table import FilterableTable
 
 
 TABLE_CONFIG: dict[str, dict[str, str]] = {
@@ -44,18 +44,12 @@ class TablaView(ttk.Frame):
         self.info_label = ttk.Label(header, text="")
         self.info_label.pack(side="right")
 
-        table_frame = ttk.Frame(self)
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
-
-        self.tree = ttk.Treeview(table_frame, show="headings")
-        self.tree.pack(side="left", fill=tk.BOTH, expand=True)
-
-        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
-        hsb = ttk.Scrollbar(table_frame, orient="horizontal", command=self.tree.xview)
-        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-
-        vsb.pack(side="right", fill="y")
-        hsb.pack(side="bottom", fill="x")
+        self.table = FilterableTable(
+            self,
+            on_counts_changed=self._update_counter,
+            header_aliases=COLUMN_HEADER_ALIASES,
+        )
+        self.table.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
         self.empty_label = ttk.Label(
             self,
@@ -66,17 +60,18 @@ class TablaView(ttk.Frame):
     def load_data(self) -> int:
         rows = self._fetch_rows()
         self._build_columns(rows)
-        self._populate(rows)
+        self.table.set_data(rows)
 
         total = len(rows)
-        self.info_label.config(text=f"Registros: {total}")
-
         if total == 0:
             self.empty_label.pack(anchor="w", padx=12, pady=(0, 10))
         else:
             self.empty_label.pack_forget()
 
         return total
+
+    def _update_counter(self, visibles: int, total: int) -> None:
+        self.info_label.config(text=f"Registros: {visibles} / {total}")
 
     def _fetch_rows(self) -> list[dict[str, Any]]:
         conn = get_connection()
@@ -93,12 +88,7 @@ class TablaView(ttk.Frame):
         else:
             self.columns = self._fetch_schema_columns()
 
-        self.tree.delete(*self.tree.get_children())
-        self.tree["columns"] = self.columns
-
-        for col in self.columns:
-            self.tree.heading(col, text=COLUMN_HEADER_ALIASES.get(col, col))
-            self.tree.column(col, width=130, minwidth=80, stretch=True, anchor="w")
+        self.table.set_columns(self.columns)
 
     def _fetch_schema_columns(self) -> list[str]:
         conn = get_connection()
@@ -109,14 +99,3 @@ class TablaView(ttk.Frame):
             return [row["name"] for row in schema_rows]
         finally:
             conn.close()
-
-    def _populate(self, rows: list[dict[str, Any]]) -> None:
-        for row in rows:
-            values = [self._safe_value(row.get(col)) for col in self.columns]
-            self.tree.insert("", "end", values=values)
-
-    @staticmethod
-    def _safe_value(value: Any) -> str:
-        if value is None:
-            return ""
-        return str(value)
