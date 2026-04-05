@@ -17,7 +17,6 @@ from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from backend.core.utils_normalizacion import (
-    normalizar_fecha_hora,
     normalizar_hora,
     normalizar_linea,
     normalizar_pk,
@@ -111,25 +110,25 @@ def _hora_a_time(hora_raw: Any) -> time | None:
         return None
 
 
-def _resolver_intervalo_restriccion(restr: dict[str, Any]) -> tuple[datetime, datetime, bool] | None:
-    """Retorna intervalo temporal de restricción y si tiene fecha real."""
-    inicio_real = normalizar_fecha_hora(restr.get("fecha_inicio"), restr.get("hora_inicio"))
-    fin_real = normalizar_fecha_hora(restr.get("fecha_fin"), restr.get("hora_fin"))
-
-    if inicio_real and fin_real:
-        ini, fin = normalizar_intervalo_datetime(inicio_real, fin_real)
-        return ini, fin, True
+def _resolver_intervalo_restriccion(restr: dict[str, Any]) -> tuple[datetime, datetime] | None:
+    """Convierte restricción a intervalo horario ignorando fechas reales."""
 
     hora_ini = _hora_a_time(restr.get("hora_inicio"))
     hora_fin = _hora_a_time(restr.get("hora_fin"))
+
     if not hora_ini or not hora_fin:
         return None
 
     base = date(2000, 1, 1)
+
     ini = datetime.combine(base, hora_ini)
     fin = datetime.combine(base, hora_fin)
-    ini, fin = normalizar_intervalo_datetime(ini, fin)
-    return ini, fin, False
+
+    # manejar cruce de medianoche
+    if fin < ini:
+        fin = fin + timedelta(days=1)
+
+    return ini, fin
 
 
 def _orden_valor(paso: dict[str, Any]) -> tuple[int, int]:
@@ -319,9 +318,10 @@ def _detectar_conflictos_restriccion_por_tramo(
         stats["comparadas"] += 1
 
         linea_restr = normalizar_linea(restr.get("linea"))
-        if linea_restr != linea_tramo:
-            stats["desc_linea"] += 1
-            continue
+        if linea_tramo is not None and linea_restr is not None:
+            if linea_tramo != linea_restr:
+                stats["desc_linea"] += 1
+                continue
 
         pk_ini_restr = normalizar_pk(restr.get("pk_inicio"))
         pk_fin_restr = normalizar_pk(restr.get("pk_fin"))
@@ -334,7 +334,7 @@ def _detectar_conflictos_restriccion_por_tramo(
             stats["desc_tiempo"] += 1
             continue
 
-        dt_ini_restr, dt_fin_restr, _ = intervalo_restr
+        dt_ini_restr, dt_fin_restr = intervalo_restr
         if not hay_solape_temporal(tramo.get("dt_inicio"), tramo.get("dt_fin"), dt_ini_restr, dt_fin_restr):
             stats["desc_tiempo"] += 1
             continue
