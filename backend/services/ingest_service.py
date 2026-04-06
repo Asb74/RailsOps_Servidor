@@ -122,7 +122,6 @@ def ejecutar_ingestion_gmail() -> dict[str, Any]:
             # Marcamos el correo como procesado para no redescargar/reprocesar sus adjuntos en futuras corridas.
             # Se marca incluso si no hubo adjuntos útiles, para evitar ciclos de reintento infinitos sobre el mismo correo.
             marcar_procesado(gmail_id)
-            marcar_email_como_leido(gmail_id)
             logger.info(
                 "[INGEST] Correo finalizado: gmail_id=%s adjuntos_procesados=%s adjuntos_totales=%s",
                 gmail_id,
@@ -132,6 +131,12 @@ def ejecutar_ingestion_gmail() -> dict[str, Any]:
         except Exception:
             print(f"[GMAIL] Error procesando email: {gmail_id}")
             logger.exception("[INGEST] Error procesando correo gmail_id=%s", gmail_id)
+        finally:
+            try:
+                marcar_email_como_leido(gmail_id)
+                print(f"[GMAIL] Email marcado como leído: {gmail_id}")
+            except Exception:
+                print(f"[GMAIL] Error marcando como leído: {gmail_id}")
 
     resumen = {
         "total_correos_descargados": len(agrupados),
