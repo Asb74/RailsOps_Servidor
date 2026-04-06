@@ -15,6 +15,8 @@ from backend.core.conflict_service import (
     insertar_conflictos,
     limpiar_conflictos,
     normalizar_intervalo_datetime,
+    resolver_intervalo_restriccion,
+    resolver_intervalo_tramo,
     safe_float,
 )
 
@@ -24,6 +26,8 @@ __all__ = [
     "normalizar_intervalo_datetime",
     "hay_solape_temporal",
     "construir_tramos_malla",
+    "resolver_intervalo_restriccion",
+    "resolver_intervalo_tramo",
     "limpiar_conflictos",
     "insertar_conflictos",
     "detectar_conflictos_tba",
