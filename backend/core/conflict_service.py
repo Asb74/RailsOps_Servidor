@@ -17,6 +17,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from backend.core.utils_normalizacion import (
+    normalizar_fecha_hora,
     normalizar_hora,
     normalizar_linea,
     normalizar_pk,
@@ -110,25 +111,59 @@ def _hora_a_time(hora_raw: Any) -> time | None:
         return None
 
 
-def _resolver_intervalo_restriccion(restr: dict[str, Any]) -> tuple[datetime, datetime] | None:
-    """Convierte restricción a intervalo horario ignorando fechas reales."""
+def _validar_modo(modo: str | None) -> str:
+    modo_norm = str(modo or "real").strip().lower()
+    if modo_norm not in ("real", "simulacion"):
+        raise ValueError("modo debe ser 'real' o 'simulacion'")
+    return modo_norm
+
+
+def resolver_intervalo_restriccion(restr: dict[str, Any], modo: str = "real") -> tuple[datetime, datetime] | None:
+    """Resuelve intervalo de restricción según modo de análisis."""
+    modo_norm = _validar_modo(modo)
+
+    if modo_norm == "real":
+        dt_ini = normalizar_fecha_hora(restr.get("fecha_inicio"), restr.get("hora_inicio"))
+        dt_fin = normalizar_fecha_hora(restr.get("fecha_fin"), restr.get("hora_fin"))
+        if dt_ini is not None and dt_fin is not None:
+            return normalizar_intervalo_datetime(dt_ini, dt_fin)
 
     hora_ini = _hora_a_time(restr.get("hora_inicio"))
     hora_fin = _hora_a_time(restr.get("hora_fin"))
-
     if not hora_ini or not hora_fin:
         return None
 
     base = date(2000, 1, 1)
-
     ini = datetime.combine(base, hora_ini)
     fin = datetime.combine(base, hora_fin)
+    return normalizar_intervalo_datetime(ini, fin)
 
-    # manejar cruce de medianoche
-    if fin < ini:
-        fin = fin + timedelta(days=1)
 
-    return ini, fin
+def _resolver_datetime_paso_real(paso: dict[str, Any]) -> datetime | None:
+    for clave_fecha in ("fecha", "fecha_real", "fecha_malla", "dia"):
+        dt = normalizar_fecha_hora(paso.get(clave_fecha), paso.get("hora"))
+        if dt is not None:
+            return dt
+    return None
+
+
+def resolver_intervalo_tramo(tramo: dict[str, Any], modo: str = "real") -> tuple[datetime, datetime] | None:
+    """Resuelve intervalo temporal del tramo según modo."""
+    modo_norm = _validar_modo(modo)
+
+    if modo_norm == "real":
+        paso_ini = tramo.get("paso_inicio") or {}
+        paso_fin = tramo.get("paso_fin") or {}
+        dt_ini_real = _resolver_datetime_paso_real(paso_ini)
+        dt_fin_real = _resolver_datetime_paso_real(paso_fin)
+        if dt_ini_real is not None and dt_fin_real is not None:
+            return normalizar_intervalo_datetime(dt_ini_real, dt_fin_real)
+
+    dt_ini = tramo.get("dt_inicio")
+    dt_fin = tramo.get("dt_fin")
+    if dt_ini is None or dt_fin is None:
+        return None
+    return normalizar_intervalo_datetime(dt_ini, dt_fin)
 
 
 def _orden_valor(paso: dict[str, Any]) -> tuple[int, int]:
@@ -305,12 +340,20 @@ def _detectar_conflictos_restriccion_por_tramo(
     restricciones: list[dict[str, Any]],
     *,
     es_tba: bool,
+    modo: str = "real",
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Detecta conflictos TBA/TBP para un tramo de tren."""
     conflictos: list[dict[str, Any]] = []
-    stats = {"comparadas": 0, "desc_linea": 0, "desc_pk": 0, "desc_tiempo": 0, "ok": 0}
+    modo_norm = _validar_modo(modo)
+    stats = {"comparadas": 0, "desc_linea": 0, "desc_pk": 0, "desc_tiempo": 0, "desc_vigencia": 0, "ok": 0}
 
     linea_tramo = normalizar_linea(tramo.get("linea"))
+    intervalo_tramo = resolver_intervalo_tramo(tramo, modo=modo_norm)
+    if not intervalo_tramo:
+        stats["desc_tiempo"] += len(restricciones)
+        return conflictos, stats
+
+    dt_ini_tramo, dt_fin_tramo = intervalo_tramo
 
     for restr in restricciones:
         stats["comparadas"] += 1
@@ -327,24 +370,40 @@ def _detectar_conflictos_restriccion_por_tramo(
             stats["desc_pk"] += 1
             continue
 
-        intervalo_restr = _resolver_intervalo_restriccion(restr)
+        intervalo_restr = resolver_intervalo_restriccion(restr, modo=modo_norm)
         if not intervalo_restr:
             stats["desc_tiempo"] += 1
             continue
 
         dt_ini_restr, dt_fin_restr = intervalo_restr
-        if not hay_solape_temporal(tramo.get("dt_inicio"), tramo.get("dt_fin"), dt_ini_restr, dt_fin_restr):
+        if not hay_solape_temporal(dt_ini_tramo, dt_fin_tramo, dt_ini_restr, dt_fin_restr):
             stats["desc_tiempo"] += 1
             continue
+        if modo_norm == "real":
+            tiene_vigencia_real = (
+                normalizar_fecha_hora(restr.get("fecha_inicio"), restr.get("hora_inicio")) is not None
+                and normalizar_fecha_hora(restr.get("fecha_fin"), restr.get("hora_fin")) is not None
+            )
+            if not tiene_vigencia_real:
+                stats["desc_vigencia"] += 1
+                continue
 
         if es_tba:
             tipo_txt = str(restr.get("tipo") or "").upper()
             tipo_conflicto = "CORTE TENSIÓN" if "TENSION" in tipo_txt or "TENSIÓN" in tipo_txt else "CORTE TOTAL"
-            descripcion = "Tren atraviesa tramo afectado por TBA"
+            descripcion = (
+                "Conflicto real: tren atraviesa tramo afectado durante la vigencia del expediente"
+                if modo_norm == "real"
+                else "Conflicto potencial: el tren solapa con la restricción por PK y horario"
+            )
             accion = "Reprogramar / detener circulación"
         else:
             tipo_conflicto = "LIMITACIÓN"
-            descripcion = "Tren atraviesa tramo afectado por TBP"
+            descripcion = (
+                "Conflicto real: tren atraviesa tramo afectado durante la vigencia del expediente"
+                if modo_norm == "real"
+                else "Conflicto potencial: el tren solapa con la restricción por PK y horario"
+            )
             accion = "Reducir velocidad / ajustar circulación"
 
         conflictos.append(
@@ -405,13 +464,14 @@ def detectar_conflictos_tba(
     paso_o_tramo: dict[str, Any],
     tba_rows: list[dict[str, Any]],
     paso_siguiente: dict[str, Any] | None = None,
+    modo: str = "real",
 ) -> list[dict[str, Any]]:
     """Detecta conflictos TBA por tramo (compatibilidad con paso + siguiente)."""
     tramo = paso_o_tramo if "dt_inicio" in paso_o_tramo and "dt_fin" in paso_o_tramo else _tramo_desde_paso(paso_o_tramo, paso_siguiente)
     if tramo is None:
         return []
 
-    conflictos, _ = _detectar_conflictos_restriccion_por_tramo(tramo, tba_rows, es_tba=True)
+    conflictos, _ = _detectar_conflictos_restriccion_por_tramo(tramo, tba_rows, es_tba=True, modo=modo)
     return conflictos
 
 
@@ -419,13 +479,14 @@ def detectar_conflictos_tbp(
     paso_o_tramo: dict[str, Any],
     tbp_rows: list[dict[str, Any]],
     paso_siguiente: dict[str, Any] | None = None,
+    modo: str = "real",
 ) -> list[dict[str, Any]]:
     """Detecta conflictos TBP por tramo (compatibilidad con paso + siguiente)."""
     tramo = paso_o_tramo if "dt_inicio" in paso_o_tramo and "dt_fin" in paso_o_tramo else _tramo_desde_paso(paso_o_tramo, paso_siguiente)
     if tramo is None:
         return []
 
-    conflictos, _ = _detectar_conflictos_restriccion_por_tramo(tramo, tbp_rows, es_tba=False)
+    conflictos, _ = _detectar_conflictos_restriccion_por_tramo(tramo, tbp_rows, es_tba=False, modo=modo)
     return conflictos
 
 
@@ -505,13 +566,15 @@ def detectar_conflictos_velocidad(
     return conflictos
 
 
-def calcular_conflictos(sqlite_service: Any, tren: str | None = None) -> list[dict[str, Any]]:
+def calcular_conflictos(sqlite_service: Any, tren: str | None = None, modo: str = "real") -> list[dict[str, Any]]:
     """Detecta conflictos operativos y los persiste en tabla conflictos."""
+    modo_norm = _validar_modo(modo)
     mallas = _obtener_rows(sqlite_service, "mallas", "tren, orden, hora", tren=tren)
     tba_rows = _obtener_rows(sqlite_service, "tba", "linea, pk_inicio, hora_inicio")
     tbp_rows = _obtener_rows(sqlite_service, "tbp", "linea, pk_inicio, hora_inicio")
     velocidades = _obtener_rows(sqlite_service, "velocidades", "linea, pk")
 
+    print(f"[DEBUG][MODO] {modo_norm}")
     print(
         f"[DEBUG][CONFLICTOS] mallas={len(mallas)} tba={len(tba_rows)} "
         f"tbp={len(tbp_rows)} velocidades={len(velocidades)}"
@@ -523,12 +586,12 @@ def calcular_conflictos(sqlite_service: Any, tren: str | None = None) -> list[di
     tramos = construir_tramos_malla(mallas)
     print(f"[DEBUG][CONFLICTOS] tramos_construidos={len(tramos)}")
 
-    stats_tba = {"comparadas": 0, "desc_linea": 0, "desc_pk": 0, "desc_tiempo": 0, "ok": 0}
-    stats_tbp = {"comparadas": 0, "desc_linea": 0, "desc_pk": 0, "desc_tiempo": 0, "ok": 0}
+    stats_tba = {"comparadas": 0, "desc_linea": 0, "desc_pk": 0, "desc_tiempo": 0, "desc_vigencia": 0, "ok": 0}
+    stats_tbp = {"comparadas": 0, "desc_linea": 0, "desc_pk": 0, "desc_tiempo": 0, "desc_vigencia": 0, "ok": 0}
 
     for tramo in tramos:
-        confl_tba, tramo_stats_tba = _detectar_conflictos_restriccion_por_tramo(tramo, tba_rows, es_tba=True)
-        confl_tbp, tramo_stats_tbp = _detectar_conflictos_restriccion_por_tramo(tramo, tbp_rows, es_tba=False)
+        confl_tba, tramo_stats_tba = _detectar_conflictos_restriccion_por_tramo(tramo, tba_rows, es_tba=True, modo=modo_norm)
+        confl_tbp, tramo_stats_tbp = _detectar_conflictos_restriccion_por_tramo(tramo, tbp_rows, es_tba=False, modo=modo_norm)
         conflictos.extend(confl_tba)
         conflictos.extend(confl_tbp)
         for key in stats_tba:
@@ -544,12 +607,14 @@ def calcular_conflictos(sqlite_service: Any, tren: str | None = None) -> list[di
         "[DEBUG][TBA] "
         f"comparadas={stats_tba['comparadas']} descartes_linea={stats_tba['desc_linea']} "
         f"descartes_pk={stats_tba['desc_pk']} descartes_tiempo={stats_tba['desc_tiempo']} "
+        f"descartes_vigencia={stats_tba['desc_vigencia']} "
         f"conflictos={stats_tba['ok']}"
     )
     print(
         "[DEBUG][TBP] "
         f"comparadas={stats_tbp['comparadas']} descartes_linea={stats_tbp['desc_linea']} "
         f"descartes_pk={stats_tbp['desc_pk']} descartes_tiempo={stats_tbp['desc_tiempo']} "
+        f"descartes_vigencia={stats_tbp['desc_vigencia']} "
         f"conflictos={stats_tbp['ok']}"
     )
     print(f"[DEBUG][CONFLICTOS] detectados={len(conflictos)} insertados_sin_duplicado={insertados}")
@@ -557,6 +622,6 @@ def calcular_conflictos(sqlite_service: Any, tren: str | None = None) -> list[di
     return conflictos
 
 
-def detectar_conflictos(sqlite_service: Any, tren: str | None = None) -> list[dict[str, Any]]:
+def detectar_conflictos(sqlite_service: Any, tren: str | None = None, modo: str = "real") -> list[dict[str, Any]]:
     """Alias de compatibilidad con nombre previo."""
-    return calcular_conflictos(sqlite_service, tren=tren)
+    return calcular_conflictos(sqlite_service, tren=tren, modo=modo)
