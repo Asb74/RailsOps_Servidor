@@ -29,6 +29,25 @@ def get_gmail_service():
     return build("gmail", "v1", credentials=creds)
 
 
+def _ensure_unread_query(query: str) -> str:
+    normalized = (query or "").strip()
+    if "is:unread" in normalized.lower():
+        return normalized
+    if not normalized:
+        return "is:unread"
+    return f"{normalized} is:unread"
+
+
+def marcar_email_como_leido(message_id: str) -> None:
+    service = get_gmail_service()
+    service.users().messages().modify(
+        userId="me",
+        id=message_id,
+        body={"removeLabelIds": ["UNREAD"]},
+    ).execute()
+    print(f"[GMAIL] Email marcado como leído: {message_id}")
+
+
 def clasificar_documento(nombre: str | None) -> str | None:
     nombre_up = (nombre or "").upper()
 
@@ -151,7 +170,8 @@ def descargar_adjuntos() -> list[dict[str, Any]]:
     """
     service = get_gmail_service()
     messages: list[dict[str, str]] = []
-    request = service.users().messages().list(userId="me", q="has:attachment", maxResults=200)
+    query = _ensure_unread_query("has:attachment")
+    request = service.users().messages().list(userId="me", q=query, maxResults=200)
 
     while request is not None:
         response = request.execute()
